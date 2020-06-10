@@ -1,0 +1,2 @@
+AUR libuvc
+Pacman clang, llvm
