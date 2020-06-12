@@ -6,7 +6,7 @@ use std::env;
 
 use std::sync::mpsc::{channel, Sender, Receiver};
 // use std::sync::{Mutex, Arc};
-use std::{thread, time};
+use std::thread;
 use std::time::Duration;
 
 // ============================================================================
@@ -53,8 +53,6 @@ fn as_client(id: u8, server_address: &str) {
         thread::sleep(time::Duration::from_millis(1500));
     }
 }
-
-type Consumer = Sender<Packet>;
 
 fn as_server(serving_address: &str) {
     println!(":> Shall start as server at {}!", serving_address);
@@ -152,6 +150,8 @@ fn as_server(serving_address: &str) {
 // ============================================================================
 // ============================================================================
 // ============================================================================
+type Consumer = Sender<Packet>;
+
 #[derive(Clone)]
 struct Packet {
     from_id: u8,

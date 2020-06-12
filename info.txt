@@ -1,2 +1,9 @@
 AUR libuvc
 Pacman clang, llvm
+
+Get window size:
+let (window_width, window_height) = {
+    let size = display.gl_window().window().inner_size();
+    (size.width, size.height)
+};
+println!("Size={},{}", window_width, window_height);
