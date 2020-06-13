@@ -1,7 +1,7 @@
 use glium::{implement_vertex, uniform, Surface};
 use uvc::{Frame};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 // use std::{thread, time};
 
 use flate2::write::DeflateEncoder;
@@ -115,7 +115,7 @@ fn as_client(id: u8, server_address: &str) {
     let context = glutin::ContextBuilder::new();
     let display = glium::Display::new(window, context, &events_loop).unwrap();
 
-    let (vertices, display) = generate_vertices(1, display);
+    let (vertex_layout, display) = generate_vertex_layout(display);
     let indices = glium::IndexBuffer::new(
         &display,
         glium::index::PrimitiveType::TrianglesList,
@@ -125,8 +125,20 @@ fn as_client(id: u8, server_address: &str) {
 
     // ===================== Setup frames ======================
 
+    let max_amount_of_people = 4;
+    let amount_of_people = Arc::new(RwLock::new(1 as usize)); // start with just self TODO: remove usize
+
+    // Stores actual camera frames
     let mut frames: Vec<Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>> = Vec::new();
-    frames.push(Arc::new(Mutex::new(None)));
+    while frames.len() < max_amount_of_people {
+        frames.push(Arc::new(Mutex::new(None)));
+    }
+
+    // Temporary buffer for opengl
+    let mut buffers: Vec<Option<glium::texture::SrgbTexture2d>> = Vec::new(); // start with single (self)
+    while buffers.len() < max_amount_of_people {
+        buffers.push(None);
+    }
 
     // ===================== Setup camera ======================
 
@@ -160,14 +172,38 @@ fn as_client(id: u8, server_address: &str) {
         .get_stream_handle_with_format(format)
         .expect("Could not open a stream with this format");
 
-    // The first (index 0) frame is always present and represents self
+    let my_frame = Arc::new(RwLock::new(None));
+    
+    let my_frame_clone = my_frame.clone();
     let _stream = streamh
-        .start_stream(callback_frame_to_image, frames[0].clone())
+        .start_stream(move |frame: &Frame, data: &mut Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>| {
+            let x = frame_to_raw_image(frame).expect("Failed to unwrap frame_to_raw_image()");
+            let cloned_image = to_my_frame(&x);
+            {
+                let mut data = Mutex::lock(&data).unwrap();
+                *data = Some(x);
+            }
+
+            // XXX: a new frame is ready, time to send to others here!!!
+            *my_frame_clone.write().unwrap() = Some(cloned_image);
+        }, frames[0].clone()) // the first (index 0) frame is always present and represents self
         .unwrap();
+
+    // ===================== Network start ======================
+
+    let my_frame_clone = my_frame.clone();
+    let temp_clone = frames[1].clone();
+    let amount_clone = amount_of_people.clone();
+    thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        if let Some(frame) = &*my_frame_clone.read().unwrap() {
+            *Mutex::lock(&temp_clone).unwrap() = Some(from_my_frame(frame.clone()));
+            *amount_clone.write().unwrap() += 1;
+        }
+    });
 
     // ===================== Start graphics loop ======================
 
-    let mut buffer: Option<glium::texture::SrgbTexture2d> = None;
     events_loop.run(move |event, _, control_flow| {
         if let glutin::event::Event::WindowEvent { event, .. } = event {
             if let glutin::event::WindowEvent::CloseRequested = event {
@@ -179,38 +215,33 @@ fn as_client(id: u8, server_address: &str) {
         let mut target = display.draw();
         target.clear_color(0.0, 0.0, 1.0, 1.0);
 
-        match Mutex::lock(&frames[0]).unwrap().take() {
-            None => {}
-            Some(image) => {
-                let image = glium::texture::SrgbTexture2d::new(&display, image)
-                    .expect("Could not use image");
-                buffer = Some(image);
+        let amount : usize;
+        {
+            amount = *amount_of_people.read().unwrap();
+        }
+
+        for i in 0..amount {
+            match Mutex::lock(&frames[i]).unwrap().take() {
+                None => {}
+                Some(image) => {
+                    let image = glium::texture::SrgbTexture2d::new(&display, image)
+                        .expect("Could not use image");
+                    buffers[i] = Some(image);
+                }
             }
         }
 
-        // for v in vertices.others.iter() {
-        for i in 0..vertices.others.len() {
-            if let Some(ref b) = buffer {
+        for i in (0..amount).rev() { // reverse to make [0] (self) render last
+            if let Some(ref b) = buffers[i] {
                 let uniforms = uniform! { u_image: b };
                 target.draw(
-                    &vertices.others[i],
+                    &vertex_layout[amount - 1][i], // layout indexing starts from 0
                     &indices,
                     &program,
                     &uniforms,
                     &Default::default(),
                 ).unwrap();
             }
-        }
-
-        if let Some(ref b) = buffer {
-            let uniforms = uniform! { u_image: b };
-            target.draw(
-                &vertices.small,
-                &indices,
-                &program,
-                &uniforms,
-                &Default::default(),
-            ).unwrap();
         }
 
         target.finish().unwrap();
@@ -243,32 +274,42 @@ fn frame_to_raw_image(
     Ok(image)
 }
 
-fn callback_frame_to_image(
-    frame: &Frame,
-    data: &mut Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>,
-) {
-    let image = frame_to_raw_image(frame);
-    match image {
-        Err(x) => println!("{:#?}", x),
-        Ok(x) => {
-            let mut data = Mutex::lock(&data).unwrap();
-            *data = Some(x);
-        }
-    }
-}
+// fn callback_frame_to_image(
+//     frame: &Frame,
+//     data: &mut Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>,
+// ) {
+//     let image = frame_to_raw_image(frame);
+//     match image {
+//         Err(x) => println!("{:#?}", x),
+//         Ok(x) => {
+//             let mut data = Mutex::lock(&data).unwrap();
+//             *data = Some(x);
+//         }
+//     }
+// }
 
+#[derive(Clone)]
 struct MyFrame {
     data: Vec<u8>,
     width: u16,
     height: u16,
 }
 
-fn clone_image(image: &Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>) -> Option<MyFrame> {
-    if let Some(image) = &*Mutex::lock(&image).unwrap() {
-        Some(MyFrame{ data: image.data.to_vec(), width: image.width as u16, height: image.height as u16 })
-    } else {
-        None
-    }
+// fn to_my_frame(image: &Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>) -> Option<MyFrame> {
+//     if let Some(image) = &*Mutex::lock(&image).unwrap() {
+//         Some(MyFrame{ data: image.data.to_vec(), width: image.width as u16, height: image.height as u16 })
+//     } else {
+//         None
+//     }
+// }
+fn to_my_frame(image: &glium::texture::RawImage2d<u8>) -> MyFrame {
+    MyFrame{ data: image.data.to_vec(), width: image.width as u16, height: image.height as u16 }
+}
+
+fn from_my_frame(MyFrame{ data, width, height }: MyFrame) -> glium::texture::RawImage2d<'static, u8> {
+// fn from_my_frame<'a>(my_frame: 'a MyFrame) -> glium::texture::RawImage2d<'a, u8> {
+    glium::texture::RawImage2d::from_raw_rgb(data, (width as u32, height as u32))
+    // glium::texture::RawImage2d::from_raw_rgb(my_frame.data, (my_frame.width as u32, my_frame.height as u32))
 }
 
 fn vertex_shader() -> &'static str {
@@ -302,10 +343,24 @@ fn fragment_shader() -> &'static str {
     "#
 }
 
-fn generate_vertices(amount_without_self: u8, display: glium::Display) -> (Vertices, glium::backend::glutin::Display) {
+// TODO: change Display type
+fn generate_vertex_layout(mut display: glium::Display) -> (Vec<Vec<glium::VertexBuffer<QuadVertex>>>, glium::backend::glutin::Display) {
+    let mut v = Vec::new();
+    for i in 0..3 {
+        let (vertices, display2) = generate_vertices(i, display);
+        display = display2;
+        v.push(vertices);
+    }
+    (v, display)
+}
+
+// TODO: can optimize
+fn generate_vertices(amount_without_self: u8, display: glium::Display) -> (Vec<glium::VertexBuffer<QuadVertex>>, glium::backend::glutin::Display) {
     if amount_without_self > 3 {
         panic!("Too many people!!!");
     }
+
+    let mut all = Vec::new();
 
     let small : glium::VertexBuffer<QuadVertex> = if amount_without_self == 0 {
         let vertices_full: [QuadVertex; 4] = [
@@ -333,7 +388,8 @@ fn generate_vertices(amount_without_self: u8, display: glium::Display) -> (Verti
         glium::VertexBuffer::new(&display, &vertices_small).unwrap()
     };
 
-    let mut others = Vec::new();
+    all.push(small);
+
     if amount_without_self == 1 {
         let vertices_full: [QuadVertex; 4] = [
             QuadVertex { pos: (-1.0, -1.0), uv: (1.0, 1.0) },
@@ -341,7 +397,7 @@ fn generate_vertices(amount_without_self: u8, display: glium::Display) -> (Verti
             QuadVertex { pos: (1.0, -1.0), uv: (0.0, 1.0) },
             QuadVertex { pos: (1.0, 1.0), uv: (0.0, 0.0) },
         ];
-        others.push(glium::VertexBuffer::new(&display, &vertices_full).unwrap());
+        all.push(glium::VertexBuffer::new(&display, &vertices_full).unwrap());
     } else if amount_without_self == 2 {
         let vertices_1: [QuadVertex; 4] = [
             QuadVertex { pos: (-1.0, -1.0), uv: (1.0, 1.0) },
@@ -355,8 +411,8 @@ fn generate_vertices(amount_without_self: u8, display: glium::Display) -> (Verti
             QuadVertex { pos: (0.0, 0.0), uv: (0.0, 1.0) },
             QuadVertex { pos: (0.0, 1.0), uv: (0.0, 0.0) },
         ];
-        others.push(glium::VertexBuffer::new(&display, &vertices_1).unwrap());
-        others.push(glium::VertexBuffer::new(&display, &vertices_2).unwrap());
+        all.push(glium::VertexBuffer::new(&display, &vertices_1).unwrap());
+        all.push(glium::VertexBuffer::new(&display, &vertices_2).unwrap());
     } else if amount_without_self == 3 {
         let vertices_1: [QuadVertex; 4] = [
             QuadVertex { pos: (-1.0, -1.0), uv: (1.0, 1.0) },
@@ -376,18 +432,18 @@ fn generate_vertices(amount_without_self: u8, display: glium::Display) -> (Verti
             QuadVertex { pos: (1.0, 0.0), uv: (0.0, 1.0) },
             QuadVertex { pos: (1.0, 1.0), uv: (0.0, 0.0) },
         ];
-        others.push(glium::VertexBuffer::new(&display, &vertices_1).unwrap());
-        others.push(glium::VertexBuffer::new(&display, &vertices_2).unwrap());
-        others.push(glium::VertexBuffer::new(&display, &vertices_3).unwrap());
+        all.push(glium::VertexBuffer::new(&display, &vertices_1).unwrap());
+        all.push(glium::VertexBuffer::new(&display, &vertices_2).unwrap());
+        all.push(glium::VertexBuffer::new(&display, &vertices_3).unwrap());
     }
 
-    (Vertices { small, others }, display)
+    (all, display)
 }
 
-struct Vertices {
-    small: glium::VertexBuffer<QuadVertex>,
-    others: Vec<glium::VertexBuffer<QuadVertex>>,
-}
+// struct Vertices {
+//     small: glium::VertexBuffer<QuadVertex>,
+//     others: Vec<glium::VertexBuffer<QuadVertex>>,
+// }
 // ============================================================================
 // ============================================================================
 // ============================================================================
