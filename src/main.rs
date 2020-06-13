@@ -2,18 +2,18 @@ use glium::{implement_vertex, uniform, Surface};
 use uvc::{Frame};
 use std::error::Error;
 use std::sync::{Arc, Mutex, RwLock};
-// use std::{thread, time};
 
 use flate2::write::DeflateEncoder;
 use flate2::bufread::DeflateDecoder;
 use flate2::Compression;
 use std::io::prelude::*;
-use std::time::{Instant, Duration};
+use std::time::{Duration};
 
 use std::env;
 use std::net::{TcpStream, TcpListener};
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
+use std::collections::HashMap;
 
 
 // ============================================================================
@@ -126,7 +126,7 @@ fn as_client(id: u8, server_address: &str) {
     // ===================== Setup frames ======================
 
     let max_amount_of_people = 4;
-    let amount_of_people = Arc::new(RwLock::new(1 as usize)); // start with just self TODO: remove usize
+    let amount_of_people = Arc::new(RwLock::new(1 as usize)); // start with just self
 
     // Stores actual camera frames
     let mut frames: Vec<Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>> = Vec::new();
@@ -162,51 +162,150 @@ fn as_client(id: u8, server_address: &str) {
     );
 
     let devh = dev.open().expect("Could not open device");
-    let format = uvc::StreamFormat {
-        width: 1280,
-        height: 720,
-        fps: 30,
-        format: uvc::FrameFormat::MJPEG,
-    };
-    for i in devh.supported_formats().into_iter() {
-        println!(":> Subtype = {:?}", i.subtype());
-        for j in i.supported_formats().into_iter() {
-            println!("Subtype inner = {:?}", j.subtype());
-            println!("[{}, {}] intervals={:?} millis, interval durations={:?}",
-                j.width(), j.height(), j.intervals().iter().map(|&x| x / 10_000).collect::<Vec<_>>(), j.intervals_duration());
+    // let format = uvc::StreamFormat {
+    //     width: 1280,
+    //     height: 720,
+    //     fps: 30,
+    //     format: uvc::FrameFormat::MJPEG,
+    // };
+    // for i in devh.supported_formats().into_iter() {
+    //     println!(":> Subtype = {:?}", i.subtype());
+    //     for j in i.supported_formats().into_iter() {
+    //         println!("Subtype inner = {:?}", j.subtype());
+    //         println!("[{}, {}] intervals={:?} millis, interval durations={:?}",
+    //             j.width(), j.height(), j.intervals().iter().map(|&x| x / 10_000).collect::<Vec<_>>(), j.intervals_duration());
+    //     }
+    // }
+    let preferred_format = devh.get_preferred_format(|a, b| {
+        if a.fps > b.fps {
+            return a;
         }
-    }
+        if a.width * a.height > b.width * b.height {
+            return a;
+        } else {
+            return b;
+        }
+    }).expect("Could not collect the preferred format");
+    println!("Choosing format {:?}", preferred_format);
     let mut streamh = devh
-        .get_stream_handle_with_format(format)
+        .get_stream_handle_with_format(preferred_format)
         .expect("Could not open a stream with this format");
 
-    let my_frame = Arc::new(RwLock::new(None));
+    // The most up-to-date frame ready to be exported to other clients
+    // let my_frame = Arc::new(RwLock::new(None));
+    let (send_frame_tx, send_frame_rx) : (Sender<Packet>, Receiver<Packet>)= channel();
+    // let send_frame_tx_cloned = send_frame_tx.clone();
+    let shared_send_frame_tx = Arc::new(Mutex::new(send_frame_tx));
     
-    let my_frame_clone = my_frame.clone();
-    let _stream = streamh
-        .start_stream(move |frame: &Frame, data: &mut Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>| {
-            let x = frame_to_raw_image(frame).expect("Failed to unwrap frame_to_raw_image()");
-            let cloned_image = to_my_frame(&x);
-            {
-                let mut data = Mutex::lock(&data).unwrap();
-                *data = Some(x);
-            }
+    // let my_frame_clone = my_frame.clone();
+    // thread::spawn(move || {
+        // let send_frame_tx_2 = send_frame_tx_cloned;
+        let _stream = streamh
+            .start_stream(move |frame: &Frame, data: &mut Arc<Mutex<Option<glium::texture::RawImage2d<u8>>>>| {
+                let x = frame_to_raw_image(frame).expect("Failed to unwrap frame_to_raw_image()");
+                let my_frame = to_my_frame(&x); // cloned
+                {
+                    let mut data = Mutex::lock(&data).unwrap();
+                    *data = Some(x);
+                }
 
-            // XXX: a new frame is ready, time to send to others here!!!
-            *my_frame_clone.write().unwrap() = Some(cloned_image);
-        }, frames[0].clone()) // the first (index 0) frame is always present and represents self
+                // XXX: a new frame is ready, time to send to others here!!!
+                // *my_frame_clone.write().unwrap() = Some(cloned_image);
+                // We form the packet exactly here because:
+                // 1) thus we minimize the amount of data sent through the channel
+                // 2) this callback has no other useful purpose for another 30ms anyway
+                {
+                    let send_tx = Mutex::lock(&shared_send_frame_tx).unwrap();
+                    send_tx.send(my_frame_to_packet(my_frame)).unwrap();
+                }
+                    // send_frame_tx_2.send(my_frame_to_packet(my_frame)).unwrap();
+            }, frames[0].clone()) // the first (index 0) frame is always present and represents self
         .unwrap();
+    // });
 
     // ===================== Network start ======================
 
-    let my_frame_clone = my_frame.clone();
-    let temp_clone = frames[1].clone();
-    let amount_clone = amount_of_people.clone();
+    // let my_frame_clone = my_frame.clone();
+    // let temp_clone = frames[1].clone();
+    // let amount_clone = amount_of_people.clone();
+    // thread::spawn(move || {
+    //     std::thread::sleep(Duration::from_millis(1500));
+    //     if let Some(frame) = &*my_frame_clone.read().unwrap() {
+    //         *Mutex::lock(&temp_clone).unwrap() = Some(from_my_frame(frame.clone()));
+    //         *amount_clone.write().unwrap() += 1;
+    //     }
+    // });
+    println!(":> Shall start as client with id {}!", id);
+
+    let mut stream = TcpStream::connect(server_address).map_err(|_| {
+        println!("::> Failed to establish connection to server at {}", server_address);
+    }).expect("::> Shall panic");
+    let stream_clone = stream.try_clone().unwrap();
+    let (must_terminate_tx, must_terminate_rx) = channel();
+
+    // This thread is responsible for receiving Packets and terminating the other
+    // thread in case the Server dies
+    let mut frames_cloned = Vec::new();
+    for i in 1..frames.len() {
+        frames_cloned.push(frames[i].clone());
+    }
+    let amount_of_people_cloned = amount_of_people.clone();
     thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1500));
-        if let Some(frame) = &*my_frame_clone.read().unwrap() {
-            *Mutex::lock(&temp_clone).unwrap() = Some(from_my_frame(frame.clone()));
-            *amount_clone.write().unwrap() += 1;
+        let mut stream = stream_clone;
+        let mut id_to_index = HashMap::new();
+        let mut next_index = 1; // 0 is reserved for self
+
+        loop {
+            if let Ok(packet) = read_packet(&mut stream) {
+                println!(":> [Info] Client {} received packet from {} with order {}", id, packet.from_id, packet.order);
+                let from_id = packet.from_id;
+                let content = Some(from_my_frame(packet_to_my_frame(packet)));
+                if let Some(index) = id_to_index.get(&from_id) {
+                    let index: usize = *index;
+                    // Existing client
+                    // +1 to skip [0] (self) because frames_cloned does not contain [0] (self)
+                    *Mutex::lock(&frames_cloned[index + 1]).unwrap() = content;
+                } else {
+                    // New client
+                    *Mutex::lock(&frames_cloned[next_index]).unwrap() = content;
+                    id_to_index.insert(from_id, next_index);
+                    next_index += 1;
+                    *amount_of_people_cloned.write().unwrap() += 1;
+                }
+            } else {
+                println!(":> The server has died! Terminating...");
+                must_terminate_tx.send(()).unwrap();
+                return; // finish thread
+            }
+        }
+    });
+
+    // This thread is responsible for generating Packets and sending them
+    // let my_frame_clone = my_frame.clone();
+    thread::spawn(move || {
+        let mut order = id as u32 * 1000;
+        loop {
+            if must_terminate_rx.try_recv().is_ok() {
+                println!(":> Finishing client {}...", id);
+                return; // finish thread
+            }
+
+            if let Ok(mut packet) = send_frame_rx.try_recv() {
+                packet.from_id = id;
+                packet.order = order;
+                println!(":> [Info] Client {} sent packet with order {}", id, packet.order);
+                // We get notified about connection failure from the other thread => can ignore here
+                let _ = write_packet(packet, &mut stream);
+                order += 1;
+            }
+
+            // let packet = spawn_packet(id, order);
+            // println!(":> [Info] Client {} sent packet with order {}", id, packet.order);
+            // We get notified about connection failure from the other thread => can ignore here
+            // let _ = write_packet(packet, &mut stream);
+            // order += 1;
+
+            thread::sleep(Duration::from_millis(60)); // TODO??
         }
     });
 
@@ -314,10 +413,30 @@ fn to_my_frame(image: &glium::texture::RawImage2d<u8>) -> MyFrame {
     MyFrame{ data: image.data.to_vec(), width: image.width as u16, height: image.height as u16 }
 }
 
-fn from_my_frame(MyFrame{ data, width, height }: MyFrame) -> glium::texture::RawImage2d<'static, u8> {
+fn my_frame_to_packet(my_frame: MyFrame) -> Packet {
+    let compressed_video = encode(&my_frame.data);
+    Packet {
+        from_id: 0,
+        order: 0,
+        width: my_frame.width,
+        height: my_frame.height,
+        compressed_length: compressed_video.len() as u16,
+        compressed_video,
+    }
+}
+
+fn packet_to_my_frame(packet: Packet) -> MyFrame {
+    MyFrame {
+        data: decode(&packet.compressed_video),
+        width: packet.width,
+        height: packet.height,
+    }
+}
+
 // fn from_my_frame<'a>(my_frame: 'a MyFrame) -> glium::texture::RawImage2d<'a, u8> {
-    glium::texture::RawImage2d::from_raw_rgb(data, (width as u32, height as u32))
     // glium::texture::RawImage2d::from_raw_rgb(my_frame.data, (my_frame.width as u32, my_frame.height as u32))
+fn from_my_frame(MyFrame{ data, width, height }: MyFrame) -> glium::texture::RawImage2d<'static, u8> {
+    glium::texture::RawImage2d::from_raw_rgb(data, (width as u32, height as u32))
 }
 
 fn vertex_shader() -> &'static str {
