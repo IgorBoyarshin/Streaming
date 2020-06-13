@@ -168,6 +168,14 @@ fn as_client(id: u8, server_address: &str) {
         fps: 30,
         format: uvc::FrameFormat::MJPEG,
     };
+    for i in devh.supported_formats().into_iter() {
+        println!(":> Subtype = {:?}", i.subtype());
+        for j in i.supported_formats().into_iter() {
+            println!("Subtype inner = {:?}", j.subtype());
+            println!("[{}, {}] intervals={:?} millis, interval durations={:?}",
+                j.width(), j.height(), j.intervals().iter().map(|&x| x / 10_000).collect::<Vec<_>>(), j.intervals_duration());
+        }
+    }
     let mut streamh = devh
         .get_stream_handle_with_format(format)
         .expect("Could not open a stream with this format");
