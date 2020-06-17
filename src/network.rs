@@ -107,14 +107,14 @@ fn as_server(serving_address: &str) {
                     consumers.retain(|consumer| { // HACK to be able to remove while iterating
                         // TODO: optimize last packet move
                         // Retain if no error while sending (the channel is alive)
-                        !consumer.send(packet.clone())
+                        consumer.send(packet.clone())
                             .map(|_| {
                                 // println!(":> [Info] Server sends packet from {} with order {} to someone", packet.from_id, packet.order);
                             })
                             .map_err(|_| {
                                 println!(":> No longer have some Client, shall remove it from the Vec");
                             })
-                            .is_err()
+                            .is_ok()
                     });
                 } else {
                     println!(":> Failed to read packet from Client, it must have hung up. Shall end this Client");
@@ -235,20 +235,20 @@ fn generate_random_id() -> u8 {
     rand::random::<u8>()
 }
 
-fn main() {
-    let client_connect_to = "127.0.0.1:1234";
-    let server_at         = "127.0.0.1:1234";
-
-    let args: Vec<String> = env::args().collect();
-    if args.len() == 1 {
-        println!(":> Please specify either 'client' or 'server'");
-    } else {
-        if args[1] == "client" {
-            as_client(generate_random_id(), client_connect_to);
-        } else if args[1] == "server" {
-            as_server(server_at);
-        } else {
-            println!(":> Please specify either 'client' or 'server'");
-        }
-    }
-}
+// fn main() {
+//     let client_connect_to = "127.0.0.1:1234";
+//     let server_at         = "127.0.0.1:1234";
+//
+//     let args: Vec<String> = env::args().collect();
+//     if args.len() == 1 {
+//         println!(":> Please specify either 'client' or 'server'");
+//     } else {
+//         if args[1] == "client" {
+//             as_client(generate_random_id(), client_connect_to);
+//         } else if args[1] == "server" {
+//             as_server(server_at);
+//         } else {
+//             println!(":> Please specify either 'client' or 'server'");
+//         }
+//     }
+// }

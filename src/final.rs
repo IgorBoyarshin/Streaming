@@ -3,6 +3,10 @@ use uvc::{Frame};
 use std::error::Error;
 use std::sync::{Arc, Mutex, RwLock};
 
+// use flate2::write::ZlibEncoder;
+// use flate2::bufread::ZlibDecoder;
+// use flate2::write::GzEncoder;
+// use flate2::bufread::GzDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::bufread::DeflateDecoder;
 use flate2::Compression;
@@ -24,7 +28,8 @@ fn generate_random_id() -> u8 {
 }
 
 fn main() {
-    let client_connect_to = "127.0.0.1:1234";
+    let client_connect_to = "3.121.212.15:12345";
+    // let client_connect_to = "127.0.0.1:1234";
     let server_at         = "127.0.0.1:1234";
 
     let args: Vec<String> = env::args().collect();
@@ -168,19 +173,19 @@ fn as_client(id: u8, server_address: &str) {
     //     fps: 30,
     //     format: uvc::FrameFormat::MJPEG,
     // };
-    // for i in devh.supported_formats().into_iter() {
-    //     println!(":> Subtype = {:?}", i.subtype());
-    //     for j in i.supported_formats().into_iter() {
-    //         println!("Subtype inner = {:?}", j.subtype());
-    //         println!("[{}, {}] intervals={:?} millis, interval durations={:?}",
-    //             j.width(), j.height(), j.intervals().iter().map(|&x| x / 10_000).collect::<Vec<_>>(), j.intervals_duration());
-    //     }
-    // }
+    for i in devh.supported_formats().into_iter() {
+        println!(":> Subtype = {:?}", i.subtype());
+        for j in i.supported_formats().into_iter() {
+            println!("Subtype inner = {:?}", j.subtype());
+            println!("[{}, {}] intervals={:?} millis, interval durations={:?}",
+                j.width(), j.height(), j.intervals().iter().map(|&x| x / 10_000).collect::<Vec<_>>(), j.intervals_duration());
+        }
+    }
     let preferred_format = devh.get_preferred_format(|a, b| {
-        if a.fps > b.fps {
+        if a.fps < b.fps {
             return a;
         }
-        if a.width * a.height > b.width * b.height {
+        if a.width * a.height < b.width * b.height {
             return a;
         } else {
             return b;
@@ -261,14 +266,17 @@ fn as_client(id: u8, server_address: &str) {
                 let from_id = packet.from_id;
                 let content = Some(from_my_frame(packet_to_my_frame(packet)));
                 if let Some(index) = id_to_index.get(&from_id) {
+                    println!("Existing client");
                     let index: usize = *index;
                     // Existing client
+                    // XXX: the next statement is WRONG!
                     // +1 to skip [0] (self) because frames_cloned does not contain [0] (self)
-                    *Mutex::lock(&frames_cloned[index + 1]).unwrap() = content;
+                    *Mutex::lock(&frames_cloned[index]).unwrap() = content;
                 } else {
+                    println!("New client");
                     // New client
-                    *Mutex::lock(&frames_cloned[next_index]).unwrap() = content;
-                    id_to_index.insert(from_id, next_index);
+                    *Mutex::lock(&frames_cloned[next_index - 1]).unwrap() = content;
+                    id_to_index.insert(from_id, next_index - 1);
                     next_index += 1;
                     *amount_of_people_cloned.write().unwrap() += 1;
                 }
@@ -305,7 +313,7 @@ fn as_client(id: u8, server_address: &str) {
             // let _ = write_packet(packet, &mut stream);
             // order += 1;
 
-            thread::sleep(Duration::from_millis(60)); // TODO??
+            thread::sleep(Duration::from_millis(20)); // TODO??
         }
     });
 
@@ -673,13 +681,16 @@ fn as_server(serving_address: &str) {
 fn encode(raw: &Vec<u8>) -> Vec<u8> {
     let mut e = DeflateEncoder::new(Vec::new(), Compression::fast());
     e.write_all(&raw).unwrap();
-    e.finish().unwrap()
+    let temp = e.finish().unwrap();
+    // println!("Encoded from {} to {}", raw.len(), temp.len());
+    temp
 }
 
 fn decode(compressed: &Vec<u8>) -> Vec<u8> {
     let mut result = Vec::new();
     let mut deflater = DeflateDecoder::new(&compressed[..]);
     deflater.read_to_end(&mut result).unwrap();
+    // println!("Decoded from {} to {}", compressed.len(), result.len());
     result
 }
 // ============================================================================
