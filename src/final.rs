@@ -27,24 +27,24 @@ fn generate_random_id() -> u8 {
     rand::random::<u8>()
 }
 
-fn main() {
-    let client_connect_to = "3.121.212.15:12345";
-    // let client_connect_to = "127.0.0.1:1234";
-    let server_at         = "127.0.0.1:1234";
-
-    let args: Vec<String> = env::args().collect();
-    if args.len() == 1 {
-        println!(":> Please specify either 'client' or 'server'");
-    } else {
-        if args[1] == "client" {
-            as_client(generate_random_id(), client_connect_to);
-        } else if args[1] == "server" {
-            as_server(server_at);
-        } else {
-            println!(":> Please specify either 'client' or 'server'");
-        }
-    }
-}
+// fn main() {
+//     let client_connect_to = "3.121.212.15:12345";
+//     // let client_connect_to = "127.0.0.1:1234";
+//     let server_at         = "127.0.0.1:1234";
+//
+//     let args: Vec<String> = env::args().collect();
+//     if args.len() == 1 {
+//         println!(":> Please specify either 'client' or 'server'");
+//     } else {
+//         if args[1] == "client" {
+//             as_client(generate_random_id(), client_connect_to);
+//         } else if args[1] == "server" {
+//             as_server(server_at);
+//         } else {
+//             println!(":> Please specify either 'client' or 'server'");
+//         }
+//     }
+// }
 // ============================================================================
 // ============================================================================
 // ============================================================================

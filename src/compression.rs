@@ -6,7 +6,7 @@ use std::io::prelude::*;
 use std::time::{Instant};
 
 fn create_data(width: usize, height: usize) -> Vec<u8> {
-    let size = width * height;
+    let size = width * height * 3;
     let mut data = Vec::with_capacity(size);
     for i in 0..size {
         data.push((i * i + i) as u8);
@@ -30,7 +30,7 @@ fn main() {
 }
 
 fn encode(raw: &Vec<u8>) -> Vec<u8> {
-    let mut e = DeflateEncoder::new(Vec::new(), Compression::fast());
+    let mut e = DeflateEncoder::new(Vec::new(), Compression::best());
     e.write_all(&raw).unwrap();
     e.finish().unwrap()
 }
